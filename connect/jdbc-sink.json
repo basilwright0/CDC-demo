@@ -1,0 +1,25 @@
+{
+  "name": "olist-readmodel-sink",
+  "config": {
+    "connector.class": "io.debezium.connector.jdbc.JdbcSinkConnector",
+    "tasks.max": "1",
+    "topics": "order_enriched",
+
+    "connection.url": "jdbc:mysql://mysql-sink:3306/olist_readmodel?useSSL=false",
+    "connection.username": "app",
+    "connection.password": "app",
+
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "io.confluent.connect.avro.AvroConverter",
+    "value.converter.schema.registry.url": "http://schema-registry:8081",
+
+    "insert.mode": "upsert",
+    "primary.key.mode": "record_value",
+    "primary.key.fields": "order_id",
+    "schema.evolution": "basic",
+    "collection.name.format": "order_enriched",
+    "quote.identifiers": "true",
+
+    "consumer.override.auto.offset.reset": "earliest"
+  }
+}

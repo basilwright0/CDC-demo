@@ -1,0 +1,260 @@
+# Step 1 skeleton: Kafka (KRaft) + Schema Registry + Kafka Connect + two MySQL + Kafka UI.
+# Credentials here are demo-only — never reuse them anywhere real.
+# Pinned to current stable tags: Confluent Platform 8.2.2 (Kafka 4.x, KRaft), MySQL 8.4 LTS, kafbat/kafka-ui v1.5.0.
+
+services:
+  # --- Source OLTP database (Debezium captures this one) -------------------
+  mysql-source:
+    image: mysql:8.4
+    container_name: mysql-source
+    # Binlog/GTID config is passed as mysqld flags rather than a mounted .cnf, so it
+    # also applies on Windows bind mounts (where MySQL ignores world-writable config files).
+    command:
+      - --mysql-native-password=ON
+      - --server-id=184054
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --binlog-expire-logs-seconds=86400
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
+      - "--secure-file-priv="   # disable the restriction so the entrypoint won't chown the read-only /csv mount; LOAD DATA reads from /csv (local demo DB)
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: olist
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-source-data:/var/lib/mysql
+      - ./mysql/source/initdb.d:/docker-entrypoint-initdb.d:ro
+      - ./data/raw:/csv:ro   # CSVs for LOAD DATA INFILE; secure_file_priv points here (entrypoint chowns /var/lib/mysql-files, so we avoid it)
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpw"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # --- Sink "read model" database (JDBC sink writes here; NOT captured) ----
+  mysql-sink:
+    image: mysql:8.4
+    container_name: mysql-sink
+    command: --mysql-native-password=ON
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: olist_readmodel
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql-sink-data:/var/lib/mysql
+      - ./mysql/sink/initdb.d:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpw"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # --- Kafka broker in KRaft mode (single-node broker + controller) -------
+  kafka:
+    image: confluentinc/cp-kafka:8.2.2
+    container_name: kafka
+    hostname: kafka
+    ports:
+      - "29092:29092"   # host-facing listener (apps/tests run on the host)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+
+  # --- Confluent Schema Registry (holds the Avro schemas) -----------------
+  schema-registry:
+    image: confluentinc/cp-schema-registry:8.2.2
+    container_name: schema-registry
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/subjects"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+  # --- Kafka Connect worker (Debezium MySQL source installed; JDBC sink added in step 6) ---
+  connect:
+    build:
+      context: ./connect
+      args:
+        DEBEZIUM_VERSION: 3.5.2.Final
+    image: dataeng-connect:8.2.2-dbz3.5.2
+    container_name: connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_GROUP_ID: connect-cluster
+      CONNECT_CONFIG_STORAGE_TOPIC: _connect-configs
+      CONNECT_OFFSET_STORAGE_TOPIC: _connect-offsets
+      CONNECT_STATUS_STORAGE_TOPIC: _connect-status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONNECT_REST_ADVERTISED_HOST_NAME: connect
+      CONNECT_REST_PORT: 8083
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+      CONNECT_LOG4J_ROOT_LOGLEVEL: INFO
+      # allow per-connector consumer/producer overrides (e.g. the sink's auto.offset.reset)
+      CONNECT_CONNECTOR_CLIENT_CONFIG_OVERRIDE_POLICY: All
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/connectors"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  # --- Kafka UI (kafbat fork; provectus is abandoned + has an unpatched RCE) ---
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.5.0
+    container_name: kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+      connect:
+        condition: service_healthy
+    ports:
+      - "8088:8080"   # host 8080 is often taken; UI is served on 8088
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: connect
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://connect:8083
+      DYNAMIC_CONFIG_ENABLED: "true"
+
+  # --- Lifecycle replayer (run on demand; not part of the default `up`) ----
+  # Drives mysql-source from the Olist CSVs in global timestamp order so Debezium
+  # emits a realistic stream of inserts and updates. Run with:
+  #   docker compose run --rm replayer
+  # Override behavior, e.g. a quick partial run:
+  #   docker compose run --rm -e REPLAY_LIMIT_ORDERS=2000 replayer
+  replayer:
+    build:
+      context: ./replayer
+    image: dataeng-replayer:1.0
+    container_name: replayer
+    profiles: ["replay"]
+    depends_on:
+      mysql-source:
+        condition: service_healthy
+    environment:
+      DB_URL: "jdbc:mysql://mysql-source:3306/olist?rewriteBatchedStatements=true&useSSL=false&allowPublicKeyRetrieval=true"
+      DB_USER: app
+      DB_PASSWORD: app
+      DATA_DIR: /data
+      REPLAY_SPEEDUP: "120000"
+      REPLAY_MAX_SLEEP_MS: "200"
+      REPLAY_LIMIT_ORDERS: "0"
+      REPLAY_TRUNCATE_FIRST: "true"
+    volumes:
+      - ./data/raw:/data:ro
+
+  # --- Kafka Streams denormalizer (the read-model builder) ----------------
+  # Behind the "app" profile because it needs the CDC topics to already exist
+  # (register the Debezium connector first). Start it with:
+  #   docker compose up -d --build streams-app
+  streams-app:
+    build:
+      context: ./streams-app
+    image: dataeng-streams-app:1.0
+    container_name: streams-app
+    profiles: ["app"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      APPLICATION_ID: olist-denormalizer
+
+  # --- Observability (Prometheus + Grafana + kafka-exporter) ---------------
+  # Optional; start with: docker compose --profile observability up -d
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.8.0
+    container_name: kafka-exporter
+    profiles: ["observability"]
+    command: ["--kafka.server=kafka:9092"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "9308:9308"
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: prometheus
+    profiles: ["observability"]
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: grafana
+    profiles: ["observability"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+
+volumes:
+  kafka-data:
+  mysql-source-data:
+  mysql-sink-data:

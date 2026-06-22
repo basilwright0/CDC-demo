@@ -1,0 +1,31 @@
+{
+  "type": "record",
+  "name": "OrderEnriched",
+  "namespace": "com.example.olist",
+  "fields": [
+    {"name": "order_id", "type": "string"},
+    {"name": "customer_id", "type": ["null", "string"], "default": null},
+    {"name": "customer_unique_id", "type": ["null", "string"], "default": null},
+    {"name": "customer_city", "type": ["null", "string"], "default": null},
+    {"name": "customer_state", "type": ["null", "string"], "default": null},
+    {"name": "order_status", "type": ["null", "string"], "default": null},
+    {"name": "order_purchase_timestamp", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": null},
+    {"name": "order_approved_at", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": null},
+    {"name": "order_delivered_carrier_date", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": null},
+    {"name": "order_delivered_customer_date", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": null},
+    {"name": "order_estimated_delivery_date", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": null},
+    {"name": "item_count", "type": "int", "default": 0},
+    {"name": "total_price", "type": "double", "default": 0.0},
+    {"name": "total_freight", "type": "double", "default": 0.0},
+    {"name": "distinct_seller_count", "type": "int", "default": 0},
+    {"name": "distinct_category_count", "type": "int", "default": 0},
+    {"name": "product_categories", "type": ["null", "string"], "default": null},
+    {"name": "payment_count", "type": "int", "default": 0},
+    {"name": "payment_types", "type": ["null", "string"], "default": null},
+    {"name": "total_payment_value", "type": "double", "default": 0.0},
+    {"name": "max_installments", "type": ["null", "int"], "default": null},
+    {"name": "review_count", "type": "int", "default": 0},
+    {"name": "review_avg_score", "type": ["null", "double"], "default": null},
+    {"name": "enriched_at", "type": {"type": "long", "logicalType": "timestamp-millis"}}
+  ]
+}

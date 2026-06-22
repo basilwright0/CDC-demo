@@ -1,0 +1,71 @@
+plugins {
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
+    maven { url = uri('https://packages.confluent.io/maven/') }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+ext {
+    // Match the running broker (Confluent Platform 8.2.2 = Apache Kafka 4.2, '8.2.2-ccs').
+    kafkaVersion = '8.2.2-ccs'
+    confluentVersion = '8.2.2'
+}
+
+dependencies {
+    implementation "org.apache.kafka:kafka-streams:${kafkaVersion}"
+    implementation "io.confluent:kafka-streams-avro-serde:${confluentVersion}"
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.18.2'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.16'
+
+    testImplementation "org.apache.kafka:kafka-streams-test-utils:${kafkaVersion}"
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+application {
+    mainClass = 'com.example.streams.StreamsApp'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+// Slow Testcontainers tests live in their own source set so the fast `test` task
+// (which runs inside the Docker image build, where there is no Docker daemon) stays unit-only.
+sourceSets {
+    integrationTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
+configurations {
+    integrationTestImplementation.extendsFrom implementation
+    integrationTestRuntimeOnly.extendsFrom runtimeOnly
+}
+
+dependencies {
+    integrationTestImplementation "io.confluent:kafka-avro-serializer:${confluentVersion}"
+    integrationTestImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+    integrationTestImplementation 'org.testcontainers:junit-jupiter:1.20.4'
+    integrationTestImplementation 'org.testcontainers:kafka:1.20.4'
+    integrationTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    integrationTestRuntimeOnly 'org.slf4j:slf4j-simple:2.0.16'
+}
+
+tasks.register('integrationTest', Test) {
+    description = 'Runs Testcontainers integration tests (needs a Docker daemon).'
+    group = 'verification'
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    useJUnitPlatform()
+    shouldRunAfter tasks.named('test')
+}

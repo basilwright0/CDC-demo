@@ -1,0 +1,21 @@
+# Dataset CSVs (download from Kaggle; not committed — see README)
+/data/*
+!/data/.gitkeep
+
+# Local env overrides
+.env
+
+# Java / Gradle build output (added in later steps)
+.gradle/
+build/
+**/build/
+*.class
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
